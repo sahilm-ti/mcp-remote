@@ -17927,6 +17927,7 @@ function mcpProxy({
 }) {
   let transportToClientClosed = false;
   let transportToServerClosed = false;
+  const pendingRequests = /* @__PURE__ */ new Map();
   const messageTransformer = createMessageTransformer({
     transformRequestFunction: (request) => {
       if (request.method === "tools/call" && request.params?.name) {
@@ -17977,9 +17978,13 @@ function mcpProxy({
       debugLog("Initialize message with modified client info", { clientInfo });
     }
     const requestId = "id" in message ? message.id : void 0;
+    if (requestId !== void 0) {
+      pendingRequests.set(requestId, true);
+    }
     transportToServer.send(message).catch((error2) => {
       onServerError(error2);
       if (requestId !== void 0) {
+        pendingRequests.delete(requestId);
         const errorResponse = {
           jsonrpc: "2.0",
           id: requestId,
@@ -18001,6 +18006,9 @@ function mcpProxy({
       result: message.result ? "result-present" : void 0,
       error: message.error
     });
+    if (message.id !== void 0 && message.id !== null) {
+      pendingRequests.delete(message.id);
+    }
     transportToClient.send(message).catch(onClientError);
   };
   transportToClient.onclose = () => {
@@ -18028,6 +18036,21 @@ function mcpProxy({
   function onServerError(error2) {
     log("Error from remote server:", error2);
     debugLog("Error from remote server", { stack: error2.stack });
+    if (pendingRequests.size > 0) {
+      const errorMsg = error2.message ?? "Remote server error";
+      for (const id of pendingRequests.keys()) {
+        const errorResponse = {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32603,
+            message: errorMsg
+          }
+        };
+        transportToClient.send(errorResponse).catch(onClientError);
+      }
+      pendingRequests.clear();
+    }
   }
 }
 async function discoverOAuthServerInfo2(serverUrl, headers = {}) {
