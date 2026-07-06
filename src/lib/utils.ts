@@ -2,7 +2,7 @@ import { OAuthClientProvider, UnauthorizedError } from '@modelcontextprotocol/sd
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { normalizeHeaders, type FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import { OAuthClientInformationFull, OAuthClientInformationFullSchema } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { OAuthCallbackServerOptions, StaticOAuthClientInformationFull, StaticOAuthClientMetadata } from './types'
@@ -489,6 +489,22 @@ export async function connectToRemoteServer(
     },
   }
 
+  const streamableHttpFetch: FetchLike = async (input, init) => {
+    const requestHeaders = normalizeHeaders(init?.headers)
+    const response = await globalThis.fetch(input, {
+      method: init?.method,
+      headers: requestHeaders,
+      body: typeof init?.body === 'string' ? init.body : undefined,
+      signal: init?.signal,
+    })
+    const isSseOpenProbe = init?.method === 'GET' && requestHeaders.Accept === 'text/event-stream'
+    if (isSseOpenProbe && response.status === 406) {
+      await response.body?.cancel()
+      return new globalThis.Response(null, { status: 405, statusText: 'Method Not Allowed' })
+    }
+    return response
+  }
+
   log(`Using transport strategy: ${transportStrategy}`)
   // Determine if we should attempt to fallback on error
   // Choose transport based on user strategy and recursion history
@@ -505,6 +521,7 @@ export async function connectToRemoteServer(
     : new StreamableHTTPClientTransport(url, {
         authProvider,
         requestInit: { headers },
+        fetch: streamableHttpFetch,
       })
 
   try {
@@ -522,7 +539,11 @@ export async function connectToRemoteServer(
         // the client is already connected. So let's just create a one-off client to make a single request and figure
         // out if we're actually talking to an HTTP server or not.
         debugLog('Creating test transport for HTTP-only connection test')
-        const testTransport = new StreamableHTTPClientTransport(url, { authProvider, requestInit: { headers } })
+        const testTransport = new StreamableHTTPClientTransport(url, {
+          authProvider,
+          requestInit: { headers },
+          fetch: streamableHttpFetch,
+        })
         const testClient = new Client({ name: 'mcp-remote-fallback-test', version: '0.0.0' }, { capabilities: {} })
         await testClient.connect(testTransport)
       }
