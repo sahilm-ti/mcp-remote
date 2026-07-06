@@ -287,10 +287,14 @@ export function mcpProxy({
     log('Error from remote server:', error)
     debugLog('Error from remote server', { stack: error.stack })
 
+    if (isBenignSseOpenError(error)) {
+      return
+    }
+
     // Drain all in-flight requests: send a JSON-RPC error for each pending id
     // so that client awaiters are unblocked immediately.  This covers the path
-    // where the transport fires onerror (e.g. _startOrAuthSse / SSE GET gets a
-    // 429) rather than the send().catch() path handled above.
+    // where the transport fires onerror for real request failures rather than
+    // the send().catch() path handled above.
     if (pendingRequests.size > 0) {
       const errorMsg = error.message ?? 'Remote server error'
       for (const id of pendingRequests.keys()) {
@@ -306,6 +310,16 @@ export function mcpProxy({
       }
       pendingRequests.clear()
     }
+  }
+
+  function isBenignSseOpenError(error: Error): boolean {
+    const errorWithCode = error as Error & {
+      code?: unknown
+      status?: unknown
+      statusCode?: unknown
+    }
+    const status = errorWithCode.code ?? errorWithCode.status ?? errorWithCode.statusCode
+    return (status === 406 || status === '406') && (error.message ?? '').includes('Failed to open SSE stream')
   }
 }
 
